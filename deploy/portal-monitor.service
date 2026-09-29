@@ -1,0 +1,53 @@
+# systemd unit for the Portal Monitor SERVER (Hostinger VPS)
+#
+# Install:
+#   sudo cp portal-monitor.service /etc/systemd/system/
+#   sudo systemctl daemon-reload
+#   sudo systemctl enable --now portal-monitor
+#
+# Logs:     journalctl -u portal-monitor -f
+# Restart:  sudo systemctl restart portal-monitor
+
+[Unit]
+Description=Portal Uptime Monitor (server)
+Documentation=file:/opt/portal-monitor/README.md
+# Wait for the network, and for MySQL when it runs on this box.
+# Unknown units in After= are ignored, so listing both is safe.
+After=network-online.target mysql.service mariadb.service
+Wants=network-online.target
+
+[Service]
+Type=simple
+User=monitor
+Group=monitor
+WorkingDirectory=/opt/portal-monitor
+ExecStart=/usr/bin/java -Xms32m -Xmx192m -jar /opt/portal-monitor/portal-monitor.jar \
+          --mode server --config /opt/portal-monitor/application.properties
+
+# Keep it running however it died, and never stop trying.
+Restart=always
+RestartSec=10
+StartLimitIntervalSec=0
+
+# Clean shutdown: the app logs "Shutting down." and exits.
+KillSignal=SIGTERM
+TimeoutStopSec=30
+
+StandardOutput=journal
+StandardError=journal
+SyslogIdentifier=portal-monitor
+
+# --- Hardening: it only needs its own folder and outbound network ---
+NoNewPrivileges=true
+PrivateTmp=true
+ProtectSystem=strict
+ProtectHome=true
+ReadWritePaths=/opt/portal-monitor
+ProtectKernelTunables=true
+ProtectKernelModules=true
+ProtectControlGroups=true
+RestrictSUIDSGID=true
+LockPersonality=true
+
+[Install]
+WantedBy=multi-user.target

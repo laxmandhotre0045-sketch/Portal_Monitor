@@ -1,0 +1,67 @@
+# =====================================================================
+#  Portal Monitor - SERVER configuration  (Hostinger VPS, Ubuntu 24.04)
+#
+#  Copy to /opt/portal-monitor/application.properties and edit every
+#  line marked "<-- CHANGE".
+#
+#  Holds passwords and the API token:  sudo chmod 600 application.properties
+# =====================================================================
+
+# =====================  DATABASE  ====================================
+# Credentials are passed to JDBC separately, never inside the URL, so a
+# password containing '#' or '@' needs no escaping here.
+db.host=localhost
+db.port=3306
+db.name=portal_monitor
+db.user=root
+db.password=Laxman@1234#
+# <-- CHANGE db.host to the real database host, and use a non-root user if you can
+
+# Extra JDBC options. MySQL 8 uses caching_sha2_password, which the driver
+# cannot complete over a plain connection, so for a database on THIS machine keep
+# allowPublicKeyRetrieval=true. For a REMOTE database use sslMode=trust instead.
+db.params=allowPublicKeyRetrieval=true
+
+# =====================  EMAIL  =======================================
+smtp.host=smtp.hostinger.com
+# 465 with ssl, or 587 with tls (STARTTLS)
+smtp.port=465
+smtp.security=ssl
+smtp.user=alerts@yourdomain.com
+smtp.password=your-mailbox-password
+smtp.from=alerts@yourdomain.com
+# <-- CHANGE smtp.user, smtp.password and smtp.from - all three are the sending mailbox
+smtp.fromName=Portal Monitor
+
+# Used when a portal row has an empty notify_email, and for all agent alerts
+alert.defaultEmail=laxmandhotre0045@gmail.com
+
+# =====================  CHECK BEHAVIOUR  =============================
+# How often the server runs its HTTP checks, in seconds
+check.intervalSeconds=60
+# Consecutive failures before a check is declared DOWN and an email goes out.
+# Applies to both CONTAINER and HTTP checks.
+check.failThreshold=3
+check.connectTimeoutSeconds=5
+check.requestTimeoutSeconds=10
+# HTTP codes that count as UP, comma-separated
+check.successCodes=200
+# Set false only for self-signed HTTPS endpoints; it disables verification for ALL checks
+check.verifySsl=true
+
+# =====================  API (the agent talks to this)  ===============
+server.port=8085
+# Keep this on loopback - nginx terminates HTTPS in front of it
+server.bind=127.0.0.1
+# Shared secret the agent must send in X-Agent-Token. At least 16 characters.
+# Generate one with:  openssl rand -hex 32
+api.token=CHANGE_ME_generate_a_long_random_token
+# <-- CHANGE api.token, and use the same value as agent.token on the Windows host
+
+# How long without a report before the host is declared offline
+agent.offlineAfterSeconds=180
+
+# =====================  GENERAL  =====================================
+# check_logs rows older than this are deleted at the end of each cycle
+log.retentionDays=30
+app.timezone=Asia/Kolkata
