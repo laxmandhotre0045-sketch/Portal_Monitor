@@ -27,6 +27,12 @@ public final class EmailService {
     private final Session session;
 
     public EmailService(Config cfg) {
+        this(cfg, DEFAULT_RETRY_DELAYS_MS);
+    }
+
+    /** Tests pass short delays; production uses DEFAULT_RETRY_DELAYS_MS. */
+    EmailService(Config cfg, long[] retryDelaysMs) {
+        this.retryDelaysMs = retryDelaysMs.clone();
         this.cfg = cfg;
 
         Properties p = new Properties();
@@ -79,6 +85,33 @@ public final class EmailService {
         return List.copyOf(out);
     }
 
+    /** Pauses before the 2nd and 3rd attempt. A lost alert is worse than a slow one. */
+    static final long[] DEFAULT_RETRY_DELAYS_MS = { 5_000, 15_000 };
+    private final long[] retryDelaysMs;
+
+    /**
+     * The state change is already saved when we get here, so a failed send is never
+     * re-detected: the email would be lost for good. Transient failures (timeouts, a busy
+     * relay, a dropped connection) are therefore retried. Bad credentials and rejected
+     * addresses are not - retrying cannot fix them.
+     */
+    private void sendWithRetry(MimeMessage msg) throws Exception {
+        for (int attempt = 0; ; attempt++) {
+            try {
+                Transport.send(msg);
+                return;
+            } catch (jakarta.mail.AuthenticationFailedException
+                     | jakarta.mail.SendFailedException permanent) {
+                throw permanent;
+            } catch (jakarta.mail.MessagingException transientFailure) {
+                if (attempt >= retryDelaysMs.length) throw transientFailure;
+                Log.error("Email attempt " + (attempt + 1) + " failed ("
+                        + Text.clean(transientFailure.getMessage(), 160) + ") - retrying.");
+                Thread.sleep(retryDelaysMs[attempt]);
+            }
+        }
+    }
+
     public SendResult send(String recipients, String subject, String html, String text) {
         List<String> to = parseEmails(recipients);
         if (to.isEmpty()) {
@@ -103,7 +136,7 @@ public final class EmailService {
             body.addBodyPart(htmlPart);
             msg.setContent(body);
 
-            Transport.send(msg);
+            sendWithRetry(msg);
             return new SendResult(true, null);
         } catch (Exception e) {
             // Never throw: a failed email is logged to alert_logs and the service keeps running.

@@ -1,0 +1,21 @@
+# Build output - rebuilt by mvn / docker build, never committed
+target/
+
+# Live configuration and secrets - stay on the machine that uses them
+/config/
+/application.properties
+.env
+.env.bak*
+/backup-*/
+*.secret
+
+# deploy.sh state and saved logs (VPS only)
+/.deploy/
+/deploy-logs/
+
+# JVM crash dumps and editor files
+hs_err_pid*.log
+replay_pid*.log
+.idea/
+.vscode/
+*.iml

@@ -58,9 +58,9 @@ class ConfigTest {
     @DisplayName("a password containing # and @ survives, and stays out of the JDBC URL")
     void passwordWithHashIsNotInUrl() {
         // This is the real password shape; '#' only starts a comment at the start of a line.
-        Config c = config("db.password", "Laxman@1234#", "db.host", "10.0.0.5", "db.name", "pm");
+        Config c = config("db.password", "Example@1234#", "db.host", "10.0.0.5", "db.name", "pm");
 
-        assertEquals("Laxman@1234#", c.dbPassword, "the whole password must be kept verbatim");
+        assertEquals("Example@1234#", c.dbPassword, "the whole password must be kept verbatim");
         assertEquals("jdbc:mariadb://10.0.0.5:3306/pm", c.jdbcUrl());
         assertFalse(c.jdbcUrl().contains("Laxman"), "credentials must never appear in the URL");
         assertFalse(c.jdbcUrl().contains("password"), "credentials must never appear in the URL");
@@ -109,6 +109,29 @@ class ConfigTest {
         assertDoesNotThrow(() -> config(
                 "agent.serverUrl", "https://m.example.com",
                 "agent.token", "x".repeat(32)).requireAgentSettings());
+    }
+
+    @Test
+    @DisplayName("example placeholders are rejected instead of failing silently later")
+    void rejectsPlaceholders() {
+        assertThrows(IllegalArgumentException.class, () -> config(
+                "agent.serverUrl", "https://monitor.yourdomain.com",
+                "agent.token", "x".repeat(32)).requireAgentSettings());
+        assertThrows(IllegalArgumentException.class, () -> config(
+                "agent.serverUrl", "monitor.example.com",
+                "agent.token", "x".repeat(32)).requireAgentSettings());
+        assertThrows(IllegalArgumentException.class, () -> config(
+                "smtp.host", "smtp.example.com", "smtp.from", "a@example.com",
+                "api.token", "CHANGE_ME_generate_a_long_random_token").requireServerSettings());
+    }
+
+    @Test
+    @DisplayName("unconfigured HTTP rows are recognised so they never raise a false DOWN")
+    void placeholderUrls() {
+        assertTrue(MonitorService.isPlaceholderUrl("http://SERVER_PUBLIC_IP:3001/"));
+        assertTrue(MonitorService.isPlaceholderUrl(null));
+        assertTrue(MonitorService.isPlaceholderUrl("  "));
+        assertFalse(MonitorService.isPlaceholderUrl("https://www.sensovibe.in/"));
     }
 
     // ---------------------------------------------------------------- validation

@@ -6,6 +6,24 @@
 // =====================================================================
 declare(strict_types=1);
 
+// =====================================================================
+//  RETIRED. This is the 1.x PHP checker. Version 2 is the Java service
+//  (portal-monitor.jar --mode server) and uses a different schema:
+//  this script writes columns that no longer exist (check_logs.error,
+//  portals.last_error) and would treat all 31 CONTAINER rows, which have
+//  no health_url, as DOWN - a false alert for every container.
+//
+//  Running it next to the Java server would also double-count failures
+//  and send duplicate emails. REMOVE its cron job in hPanel
+//  (Advanced -> Cron Jobs). It now exits immediately on purpose.
+// =====================================================================
+if (PHP_SAPI !== 'cli') {
+    http_response_code(410);
+    header('Content-Type: text/plain; charset=utf-8');
+}
+echo "check.php is retired: Portal Monitor 2.x runs as the Java service. Remove this cron job.", PHP_EOL;
+exit(0);
+
 require __DIR__ . '/config.php';
 require __DIR__ . '/mailer.php';
 

@@ -45,11 +45,12 @@ public final class AgentApiServer {
 
         server.createContext("/api/agent/report", this::handleReport);
         server.createContext("/api/status", this::handleStatus);
-        server.createContext("/health", this::handleHealth);
+        server.createContext("/health", this::handleHealth);   // also /health/live, /health/ready
+        server.createContext("/ready", this::handleReady);
 
         server.start();
         Log.info("API listening on http://" + cfg.serverBind + ":" + cfg.serverPort
-                + " (/api/agent/report, /api/status, /health)");
+                + " (/api/agent/report, /api/status, /health, /ready)");
     }
 
     public void stop() {
@@ -95,6 +96,17 @@ public final class AgentApiServer {
                 return;
             }
 
+            // An authenticated report is the agent's heartbeat, whether or not it can be stored.
+            monitor.noteReportReceived(agentId);
+
+            // Do not tell the agent "accepted" when nothing can be recorded: a 503 shows up in
+            // the agent's own log, so a broken server is visible from both ends.
+            if (monitor.dbStatus().state() == DbStatus.State.DOWN) {
+                send(ex, 503, Json.message("error",
+                        "server database unavailable - report received but not stored"));
+                return;
+            }
+
             // Answer before the (slower) evaluation so the agent is never held up by
             // email sending; the work still happens under the monitor's own lock.
             send(ex, 200, Json.message("ok", "accepted " + containers.size() + " container(s)"));
@@ -113,15 +125,46 @@ public final class AgentApiServer {
                 return;
             }
             send(ex, 200, monitor.statusJson());
+        } catch (MonitorService.DatabaseUnavailableException e) {
+            trySend(ex, 503, Json.message("error", "database unavailable: " + monitor.dbStatus().reason()));
         } catch (Exception e) {
             Log.error("Error handling /api/status: " + e);
             trySend(ex, 500, Json.message("error", "internal error"));
         }
     }
 
-    /** Deliberately open and dependency-free: it answers even when MySQL is down. */
+    /**
+     * Liveness: GET /health and /health/live. Deliberately dependency-free - it answers even
+     * when MySQL is down, and its response is unchanged from 2.0 for existing probes.
+     * GET /health/ready is an alias of /ready.
+     */
     private void handleHealth(HttpExchange ex) throws IOException {
-        trySend(ex, 200, Json.message("status", "UP"));
+        String path = ex.getRequestURI().getPath();
+        switch (path) {
+            case "/health", "/health/", "/health/live" -> trySend(ex, 200, Json.message("status", "UP"));
+            case "/health/ready" -> handleReady(ex);
+            default -> trySend(ex, 404, Json.message("error", "not found"));
+        }
+    }
+
+    /**
+     * Readiness: 200 only when the database answers and monitoring cycles are completing,
+     * otherwise 503 with the reasons. This is what the Docker healthcheck uses. It carries
+     * no secrets, but nginx does not publish it - it is for the VPS itself.
+     */
+    private void handleReady(HttpExchange ex) {
+        try {
+            String path = ex.getRequestURI().getPath();
+            if (!path.equals("/ready") && !path.equals("/ready/") && !path.equals("/health/ready")) {
+                trySend(ex, 404, Json.message("error", "not found"));
+                return;
+            }
+            MonitorService.Readiness r = monitor.readiness();
+            trySend(ex, r.ready() ? 200 : 503, r.json());
+        } catch (Exception e) {
+            Log.error("Error handling /ready: " + e);
+            trySend(ex, 500, Json.message("error", "internal error"));
+        }
     }
 
     // ------------------------------------------------------------------ helpers

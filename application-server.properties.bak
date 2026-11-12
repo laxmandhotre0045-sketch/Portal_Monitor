@@ -14,7 +14,7 @@ db.host=localhost
 db.port=3306
 db.name=portal_monitor
 db.user=root
-db.password=Laxman@1234#
+db.password=CHANGE_ME_db_password
 # <-- CHANGE db.host to the real database host, and use a non-root user if you can
 
 # Extra JDBC options. MySQL 8 uses caching_sha2_password, which the driver
@@ -28,7 +28,7 @@ smtp.host=smtp.hostinger.com
 smtp.port=465
 smtp.security=ssl
 smtp.user=alerts@yourdomain.com
-smtp.password=your-mailbox-password
+smtp.password=CHANGE_ME_smtp_app_password
 smtp.from=alerts@yourdomain.com
 # <-- CHANGE smtp.user, smtp.password and smtp.from - all three are the sending mailbox
 smtp.fromName=Portal Monitor
@@ -55,7 +55,7 @@ server.port=8085
 server.bind=127.0.0.1
 # Shared secret the agent must send in X-Agent-Token. At least 16 characters.
 # Generate one with:  openssl rand -hex 32
-api.token=CHANGE_ME_generate_a_long_random_token
+api.token=CHANGE_ME_generate_with_openssl_rand_hex_32
 # <-- CHANGE api.token, and use the same value as agent.token on the Windows host
 
 # How long without a report before the host is declared offline

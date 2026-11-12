@@ -1,0 +1,6 @@
+# Only pom.xml, src/ and the entrypoint are needed to build the image. Everything else stays out -
+# above all, configuration files that hold passwords.
+*
+!pom.xml
+!src/
+!docker/entrypoint.sh

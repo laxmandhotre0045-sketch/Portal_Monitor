@@ -1,0 +1,56 @@
+# Portal Monitor - server on the Hostinger VPS.
+#
+# Deploy with ./deploy.sh, not by hand: it builds an image tagged with the git commit,
+# keeps the previous image for rollback, and verifies health. This file touches ONLY
+# the portal-monitor container; HRMS and every other stack are separate projects.
+#
+# All settings and secrets come from .env next to this file (mode 600, never committed;
+# template: .env.example). docker/entrypoint.sh turns them into application.properties
+# on a tmpfs inside the container.
+
+name: portal-monitor   # pins the project name: network stays portal-monitor_default
+
+services:
+  portal-monitor:
+    build:
+      context: .
+    # deploy.sh sets PM_IMAGE_TAG to the git SHA; "current" is the last verified deploy.
+    image: portal-monitor:${PM_IMAGE_TAG:-current}
+    container_name: portal-monitor
+    restart: unless-stopped
+    init: true                     # forwards SIGTERM, reaps the healthcheck's processes
+    stop_grace_period: 30s
+
+    env_file:
+      - .env
+
+    # Published on the VPS loopback only; nginx is the sole way in from outside.
+    ports:
+      - "127.0.0.1:8085:8085"
+
+    # Lets DB_HOST=host.docker.internal reach the MySQL that runs on the VPS itself.
+    extra_hosts:
+      - "host.docker.internal:host-gateway"
+
+    # Hardening (as in the original VPS setup). The generated config with passwords
+    # lives only in memory, readable by the app user only.
+    read_only: true
+    tmpfs:
+      - /tmp
+      - /run/portal-monitor:uid=10001,gid=10001,mode=0700
+    security_opt:
+      - no-new-privileges:true
+    cap_drop:
+      - ALL
+
+    # -Xmx192m heap + metaspace/threads stays well under this; it protects HRMS
+    # from a runaway here, and vice versa.
+    mem_limit: 384m
+
+    # The healthcheck is defined in the Dockerfile (readiness: GET /ready).
+
+    logging:
+      driver: json-file
+      options:
+        max-size: "10m"
+        max-file: "5"

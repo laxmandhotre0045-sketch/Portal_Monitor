@@ -122,9 +122,13 @@ public final class EmailTemplates {
             rows.put("Last report", since == null ? "never" : FMT.format(since));
             rows.put("Detected at", FMT.format(now));
             rows.put("What this means",
-                    "The Windows Docker server or its internet connection is down. "
-                  + "Container status is unknown, so container checks have been set to UNKNOWN "
-                  + "and no per-container emails were sent.");
+                    since == null
+                  ? "No agent has reported since the monitor started, so NO container is being "
+                  + "monitored. Check that the agent service is running on the Docker host and "
+                  + "that agent.serverUrl and agent.token are correct."
+                  : "The Windows Docker server or its internet connection is down. "
+                  + "Container status is unknown: checks that were UP are now UNKNOWN, checks "
+                  + "already DOWN stay DOWN, and no per-container emails were sent.");
         } else {
             rows.put("Offline since", since == null ? "unknown" : FMT.format(since));
             rows.put("Back online at", FMT.format(now));

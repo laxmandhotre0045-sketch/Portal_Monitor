@@ -27,12 +27,20 @@ public final class Database implements AutoCloseable {
         Properties props = new Properties();
         props.setProperty("user", cfg.dbUser);
         props.setProperty("password", cfg.dbPassword);
+        // Bounded waits: an unreachable host must cost seconds, not the driver's 30s default
+        // per attempt, and a stuck query must not freeze the cycle (and /ready) forever.
+        // An explicit value in db.params wins.
+        if (!cfg.dbParams.contains("connectTimeout")) props.setProperty("connectTimeout", "8000");
+        if (!cfg.dbParams.contains("socketTimeout")) props.setProperty("socketTimeout", "60000");
         conn = DriverManager.getConnection(cfg.jdbcUrl(), props);
 
         // Make MySQL's NOW() agree with app.timezone, so DEFAULT CURRENT_TIMESTAMP columns
         // and the timestamps we pass in are on the same clock.
         try (Statement st = conn.createStatement()) {
             st.execute("SET time_zone = '" + sessionOffset(cfg) + "'");
+        } catch (SQLException e) {
+            conn.close();   // never leak the connection when setup fails
+            throw e;
         }
     }
 
@@ -110,13 +118,17 @@ public final class Database implements AutoCloseable {
 
     /**
      * Used by the agent watchdog: when the Windows host stops reporting we genuinely do not
-     * know the container states, so they go back to UNKNOWN with the streak cleared. No
-     * per-container emails are sent for this - one SERVER OFFLINE email covers it.
+     * know the container states, so checks that were UP go back to UNKNOWN with the streak
+     * cleared. No per-container emails are sent for this - one SERVER OFFLINE email covers it.
+     *
+     * Checks already DOWN are deliberately left DOWN. A DOWN email has gone out for them;
+     * resetting them to UNKNOWN would turn their eventual recovery into UNKNOWN -> UP, which
+     * sends nothing, so the user would never hear that the service came back.
      */
     public int resetContainerChecksToUnknown(LocalDateTime at) throws SQLException {
         String sql = "UPDATE portals SET status='UNKNOWN', fail_count=0, fail_since=NULL, "
                    + "last_detail='Host not reporting - container status unknown', last_status_change=? "
-                   + "WHERE is_active=1 AND check_type='CONTAINER' AND status <> 'UNKNOWN'";
+                   + "WHERE is_active=1 AND check_type='CONTAINER' AND status = 'UP'";
         try (PreparedStatement ps = conn.prepareStatement(sql)) {
             ps.setTimestamp(1, Timestamp.valueOf(at));
             return ps.executeUpdate();
@@ -220,6 +232,15 @@ public final class Database implements AutoCloseable {
             ps.setString(1, status);
             ps.setString(2, agentId);
             ps.executeUpdate();
+        }
+    }
+
+    /** The readiness probe: a round trip that also proves the schema and SELECT privilege. */
+    public int countActivePortals() throws SQLException {
+        try (Statement st = conn.createStatement();
+             ResultSet rs = st.executeQuery("SELECT COUNT(*) FROM portals WHERE is_active = 1")) {
+            rs.next();
+            return rs.getInt(1);
         }
     }
 

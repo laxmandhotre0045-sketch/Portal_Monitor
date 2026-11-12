@@ -19,7 +19,7 @@ import java.util.concurrent.TimeUnit;
 public final class App {
 
     private static final String USAGE = """
-            Portal Monitor 2.0.0 - Docker and HTTP uptime monitoring with email alerts
+            Portal Monitor 2.1.0 - Docker and HTTP uptime monitoring with email alerts
 
             Usage:
               java -jar portal-monitor.jar --mode server            run the server (VPS)
@@ -33,7 +33,21 @@ public final class App {
               java -jar portal-monitor.jar --help
 
             The config file defaults to ./application.properties, then to the folder holding the jar.
+            Any setting can be overridden by an environment variable: PM_ + the key in upper case
+            with dots as underscores (db.password -> PM_DB_PASSWORD), or PM_..._FILE to read it
+            from a file (Docker secrets).
+
+            HTTP endpoints (server mode):
+              GET /health       liveness - the process is up (no database needed)
+              GET /ready        readiness - database reachable and cycles completing; 503 if not
+              GET /api/status   every check and agent (needs the API token)
+              POST /api/agent/report   agent reports (needs the API token)
+
+            Container healthcheck:
+              java -cp portal-monitor.jar portalmonitor.HealthProbe [http://127.0.0.1:8085/ready]
             """;
+
+    static final String VERSION = "2.1.0";
 
     private enum Mode { SERVER, AGENT, NONE }
 
@@ -94,7 +108,14 @@ public final class App {
             fail("Bad server configuration: " + e.getMessage(), 1);
         }
 
+        Log.info("Portal Monitor " + VERSION + " starting in server mode: " + cfg.describeServer());
+        for (String note : cfg.envNotes()) Log.info("  from environment: " + note);
+
         MonitorService monitor = new MonitorService(cfg);
+        // Say plainly, before anything else, whether the database works - and why not.
+        // The server keeps running either way: it recovers by itself once MySQL accepts it,
+        // and meanwhile /ready (the Docker healthcheck) reports NOT_READY.
+        monitor.logStartupDatabaseCheck();
 
         if (once) {
             // One HTTP cycle, no API, no watchdog - handy from cron or by hand.
@@ -144,6 +165,9 @@ public final class App {
         } catch (IllegalArgumentException e) {
             fail("Bad agent configuration: " + e.getMessage(), 1);
         }
+
+        Log.info("Portal Monitor " + VERSION + " starting in agent mode: " + cfg.describeAgent());
+        for (String note : cfg.envNotes()) Log.info("  from environment: " + note);
 
         DockerAgent agent = new DockerAgent(cfg);
 

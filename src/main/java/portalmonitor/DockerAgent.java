@@ -50,7 +50,14 @@ public final class DockerAgent {
         }
 
         if (containers.isEmpty()) {
-            Log.error("docker ps returned no containers - reporting an empty list.");
+            // An empty list would make the server mark every monitored container "not found"
+            // and send a mass DOWN email. Zero containers almost always means this account is
+            // looking at the wrong Docker engine (wrong context, Windows-containers mode, or a
+            // service account without access), not that everything was deleted. Not reporting
+            // lets the server's watchdog raise one SERVER OFFLINE alert instead.
+            Log.error("docker ps returned no containers - NOT reporting. Check the Docker context "
+                    + "(docker context ls) and that this account sees the containers.");
+            return false;
         }
 
         try {
@@ -132,7 +139,7 @@ public final class DockerAgent {
         return out;
     }
 
-    private boolean post(List<ContainerReport> containers) throws Exception {
+    boolean post(List<ContainerReport> containers) throws Exception {
         String body = Json.agentReport(cfg.agentId, hostname,
                 LocalDateTime.now(cfg.zone).withNano(0), containers);
 
@@ -151,6 +158,11 @@ public final class DockerAgent {
         }
         if (resp.statusCode() == 401) {
             Log.error("Server rejected the report: 401 - agent.token does not match the server's api.token.");
+        } else if (resp.statusCode() == 301 || resp.statusCode() == 302
+                || resp.statusCode() == 307 || resp.statusCode() == 308) {
+            Log.error("Server answered HTTP " + resp.statusCode() + " (redirect to "
+                    + resp.headers().firstValue("Location").orElse("?")
+                    + ") - set agent.serverUrl to that https:// address.");
         } else {
             Log.error("Server returned HTTP " + resp.statusCode() + ": "
                     + Text.truncate(Text.oneLine(resp.body()), 200));

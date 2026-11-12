@@ -20,10 +20,55 @@ public final class MonitorService {
     private final HttpChecker httpChecker;
     private final EmailService mailer;
 
+    /** When this process started; the watchdog gives agents this long to check in. */
+    private final LocalDateTime startedAt;
+    /** Set once the "no agent has ever reported" alert went out, so it is sent once per start. */
+    private boolean noAgentAlerted;
+    /** HTTP rows already warned about for a placeholder URL - warned once, not every minute. */
+    private final java.util.Set<Integer> placeholderWarned = new java.util.HashSet<>();
+
+    /** Database reachability, shared with /ready. */
+    private final DbStatus dbStatus;
+    /** Readiness probes may run at most this often; between them the last answer is reused. */
+    static final java.time.Duration READY_PROBE_EVERY = java.time.Duration.ofSeconds(15);
+    private final Object readyProbeLock = new Object();
+
+    // Written by the scheduler thread, read by /ready.
+    private volatile LocalDateTime lastCycleOk;
+    private volatile LocalDateTime lastCycleFailed;
+    private volatile String lastCycleError;
+    private volatile LocalDateTime lastWatchdogOk;
+
     public MonitorService(Config cfg) {
         this.cfg = cfg;
         this.httpChecker = new HttpChecker(cfg);
         this.mailer = new EmailService(cfg);
+        this.startedAt = LocalDateTime.now(cfg.zone).withNano(0);
+        this.dbStatus = new DbStatus(cfg);
+    }
+
+    /** Thrown when no connection could be opened; DbStatus has already logged why. */
+    static final class DatabaseUnavailableException extends Exception {
+        DatabaseUnavailableException(Throwable cause) {
+            super(cause.getMessage(), cause);
+        }
+    }
+
+    /** Every connection goes through here, so DbStatus always reflects the latest attempt. */
+    private Database openDb() throws DatabaseUnavailableException {
+        LocalDateTime now = LocalDateTime.now(cfg.zone).withNano(0);
+        try {
+            Database db = new Database(cfg);
+            dbStatus.succeeded(now);
+            return db;
+        } catch (Exception e) {
+            dbStatus.failed(e, now);
+            throw new DatabaseUnavailableException(e);
+        }
+    }
+
+    public DbStatus dbStatus() {
+        return dbStatus;
     }
 
     /** What one check result means for one portal. alert is null, "DOWN" or "RECOVERED". */
@@ -68,8 +113,19 @@ public final class MonitorService {
 
     /** Runs all HTTP checks. Returns false only if the cycle itself broke (e.g. DB down). */
     public synchronized boolean runHttpCycle() {
-        try (Database db = new Database(cfg)) {
-            List<Portal> portals = db.activePortalsOfType(Portal.CheckType.HTTP);
+        try (Database db = openDb()) {
+            List<Portal> portals = new ArrayList<>();
+            for (Portal p : db.activePortalsOfType(Portal.CheckType.HTTP)) {
+                if (isPlaceholderUrl(p.healthUrl())) {
+                    // Never alert on a row that was never configured: it would be a false DOWN.
+                    if (placeholderWarned.add(p.id())) {
+                        Log.error("Skipping " + p.name() + ": health_url is not configured ("
+                                + p.healthUrl() + "). Set a real URL or set is_active=0.");
+                    }
+                } else {
+                    portals.add(p);
+                }
+            }
             LocalDateTime now = LocalDateTime.now(cfg.zone).withNano(0);
 
             if (!portals.isEmpty()) {
@@ -92,11 +148,23 @@ public final class MonitorService {
             }
 
             housekeeping(db);
+            lastCycleOk = LocalDateTime.now(cfg.zone).withNano(0);
+            lastCycleError = null;
             return true;
+        } catch (DatabaseUnavailableException e) {
+            // Already logged (once, with what to check) by DbStatus.
+            cycleFailed("database unavailable");
+            return false;
         } catch (Exception e) {
-            Log.error("HTTP cycle failed: " + e.getMessage());
+            Log.error("HTTP cycle failed: " + Text.oneLine(e.getMessage()));
+            cycleFailed(Text.clean(e.getMessage(), 200));
             return false;
         }
+    }
+
+    private void cycleFailed(String why) {
+        lastCycleFailed = LocalDateTime.now(cfg.zone).withNano(0);
+        lastCycleError = why;
     }
 
     // ------------------------------------------------------------------ agent reports
@@ -107,7 +175,7 @@ public final class MonitorService {
      */
     public synchronized void applyAgentReport(String agentId, String hostname,
                                               List<ContainerReport> containers) {
-        try (Database db = new Database(cfg)) {
+        try (Database db = openDb()) {
             LocalDateTime now = LocalDateTime.now(cfg.zone).withNano(0);
 
             // An agent that was offline coming back is its own alert, and must be sent
@@ -149,8 +217,10 @@ public final class MonitorService {
             Log.info("Agent report from " + agentId + " (" + hostname + "): "
                     + containers.size() + " container(s) reported, " + portals.size() + " monitored, "
                     + up + " up, " + down + " not up, " + starting + " starting.");
+        } catch (DatabaseUnavailableException e) {
+            // Already logged by DbStatus. The API also answered the agent with 503.
         } catch (Exception e) {
-            Log.error("Could not apply agent report from " + agentId + ": " + e.getMessage());
+            Log.error("Could not apply agent report from " + agentId + ": " + Text.oneLine(e.getMessage()));
         }
     }
 
@@ -159,24 +229,76 @@ public final class MonitorService {
      * back to UNKNOWN so they do not sit there claiming a stale UP or DOWN.
      */
     public synchronized void checkAgentWatchdog() {
-        try (Database db = new Database(cfg)) {
+        try (Database db = openDb()) {
             LocalDateTime now = LocalDateTime.now(cfg.zone).withNano(0);
-            for (Database.Agent a : db.allAgents()) {
+            List<Database.Agent> agents = db.allAgents();
+
+            // No agent has ever reported: container checks would sit at UNKNOWN forever with
+            // nobody told. Say so once, after giving the agent a full window to check in.
+            if (agents.isEmpty()) {
+                long sinceStart = java.time.Duration.between(startedAt, now).getSeconds();
+                if (!noAgentAlerted && sinceStart >= cfg.agentOfflineAfterSeconds
+                        && !db.activePortalsOfType(Portal.CheckType.CONTAINER).isEmpty()) {
+                    noAgentAlerted = true;
+                    Log.error("No agent has reported in " + sinceStart + "s since startup - "
+                            + "container checks are NOT being evaluated.");
+                    sendAgentAlert(db, "AGENT_OFFLINE", "(none)", "Docker agent", null, now);
+                }
+                return;
+            }
+
+            for (Database.Agent a : agents) {
                 if (!Database.Agent.ONLINE.equals(a.status())) continue;
                 if (a.lastSeen() == null) continue;
 
-                long quietSeconds = java.time.Duration.between(a.lastSeen(), now).getSeconds();
+                long quietSeconds = quietSeconds(a.lastSeen(), reportsReceived.get(a.agentId()), startedAt, now);
                 if (quietSeconds < cfg.agentOfflineAfterSeconds) continue;
 
                 db.setAgentStatus(a.agentId(), Database.Agent.OFFLINE);
                 int reset = db.resetContainerChecksToUnknown(now);
+                long silent = java.time.Duration.between(a.lastSeen(), now).getSeconds();
                 Log.error("Agent " + a.agentId() + " (" + a.hostname() + ") has not reported for "
-                        + quietSeconds + "s - marking OFFLINE, " + reset + " container check(s) set to UNKNOWN.");
+                        + silent + "s - marking OFFLINE, " + reset
+                        + " UP container check(s) set to UNKNOWN (DOWN ones stay DOWN).");
                 sendAgentAlert(db, "AGENT_OFFLINE", a.agentId(), a.hostname(), a.lastSeen(), now);
             }
+            lastWatchdogOk = now;
+        } catch (DatabaseUnavailableException e) {
+            // Already logged by DbStatus; nothing can be judged without the database.
         } catch (Exception e) {
-            Log.error("Agent watchdog failed: " + e.getMessage());
+            Log.error("Agent watchdog failed: " + Text.oneLine(e.getMessage()));
         }
+    }
+
+    /** agentId -> when its last report reached the API, whether or not the DB could store it. */
+    private final java.util.concurrent.ConcurrentHashMap<String, LocalDateTime> reportsReceived =
+            new java.util.concurrent.ConcurrentHashMap<>();
+
+    /** Called by the API the moment an authenticated report arrives - the agent's heartbeat. */
+    public void noteReportReceived(String agentId) {
+        reportsReceived.put(agentId, LocalDateTime.now(cfg.zone).withNano(0));
+    }
+
+    /**
+     * How long an agent has been silent, for the watchdog. Measured from the latest of:
+     *   - last_seen in the database;
+     *   - the last report that reached this process (stored or not - while MySQL was down
+     *     reports still arrived, and the agent must not be blamed for that);
+     *   - this server's start (while the server was down the agent's reports were refused,
+     *     so it gets a fresh window; otherwise every restart longer than
+     *     agent.offlineAfterSeconds sent a false SERVER OFFLINE / BACK ONLINE pair).
+     */
+    static long quietSeconds(LocalDateTime lastSeenDb, LocalDateTime lastReceived,
+                             LocalDateTime startedAt, LocalDateTime now) {
+        LocalDateTime from = startedAt;
+        if (lastSeenDb != null && lastSeenDb.isAfter(from)) from = lastSeenDb;
+        if (lastReceived != null && lastReceived.isAfter(from)) from = lastReceived;
+        return Math.max(0, java.time.Duration.between(from, now).getSeconds());
+    }
+
+    /** True for rows still carrying the seed placeholder, or with no URL at all. */
+    static boolean isPlaceholderUrl(String url) {
+        return url == null || url.isBlank() || url.contains("SERVER_PUBLIC_IP");
     }
 
     // ------------------------------------------------------------------ shared internals
@@ -187,14 +309,16 @@ public final class MonitorService {
         db.insertCheckLog(p.id(), r, now);
         Decision d = decide(p, r, now, cfg.failThreshold);
 
+        // Persist first, queue the email second: if the UPDATE fails, the state change is
+        // re-detected next cycle and the email goes out then - once, not twice.
+        db.updatePortal(p.id(), d.status(), d.failCount(), d.failSince(), r, now, d.statusChange());
+
         if (d.alert() != null) {
             LocalDateTime since = "RECOVERED".equals(d.alert())
                     ? (p.failSince() != null ? p.failSince() : now)
                     : d.failSince();
             alerts.add(new PendingAlert(p, r, since, d.failCount(), d.alert()));
         }
-
-        db.updatePortal(p.id(), d.status(), d.failCount(), d.failSince(), r, now, d.statusChange());
 
         Log.info(String.format("%-32s %-8s %-7s %s",
                 p.name(), d.status(),
@@ -294,7 +418,104 @@ public final class MonitorService {
         return r.ok();
     }
 
+    /** The answer behind GET /ready. */
+    public record Readiness(boolean ready, String json) { }
+
+    /**
+     * Readiness: is this server actually able to do its job right now?
+     *
+     *   database  - a real connection + query, at most every READY_PROBE_EVERY (cheap: one
+     *               connection every 15s, never blocked behind a running cycle).
+     *   httpCycle - the scheduled cycle completed recently. Catches a stuck or dying
+     *               scheduler, which a database probe alone would not.
+     *
+     * /health stays a pure liveness answer ("the process is up") for compatibility.
+     */
+    public Readiness readiness() {
+        LocalDateTime now = LocalDateTime.now(cfg.zone).withNano(0);
+        synchronized (readyProbeLock) {
+            LocalDateTime last = dbStatus.lastAttempt();
+            if (last == null || java.time.Duration.between(last, now).compareTo(READY_PROBE_EVERY) >= 0) {
+                try (Database db = openDb()) {
+                    db.countActivePortals();
+                } catch (DatabaseUnavailableException e) {
+                    // recorded by openDb
+                } catch (Exception e) {
+                    // Connected, but the query failed: missing table or privilege.
+                    dbStatus.failed(e, now);
+                }
+            }
+        }
+
+        List<String> reasons = new ArrayList<>();
+        DbStatus.State db = dbStatus.state();
+        if (db != DbStatus.State.UP) {
+            reasons.add("database " + db + (dbStatus.reason() == null ? "" : ": " + dbStatus.reason()));
+        }
+
+        // A cycle may legitimately take a while (slow sites, email retries), so allow
+        // three intervals plus two minutes before calling it stale.
+        long maxAge = 3L * cfg.intervalSeconds + 120;
+        String cycleState;
+        LocalDateTime ok = lastCycleOk;
+        if (ok != null && java.time.Duration.between(ok, now).getSeconds() <= maxAge) {
+            cycleState = "OK";
+        } else if (ok == null && java.time.Duration.between(startedAt, now).getSeconds() <= maxAge) {
+            cycleState = "STARTING";
+            reasons.add("first monitoring cycle has not completed yet");
+        } else {
+            cycleState = lastCycleError != null ? "FAILING" : "STALE";
+            reasons.add("no successful monitoring cycle for over " + maxAge + "s"
+                    + (lastCycleError != null ? " (last error: " + lastCycleError + ")" : ""));
+        }
+
+        boolean ready = reasons.isEmpty();
+        org.json.JSONObject agents = new org.json.JSONObject();
+        reportsReceived.forEach((id, at) -> agents.put(id, Json.TS.format(at)));
+
+        String json = new org.json.JSONObject()
+                .put("status", ready ? "READY" : "NOT_READY")
+                .put("checkedAt", Json.TS.format(now))
+                .put("startedAt", Json.TS.format(startedAt))
+                .put("reasons", reasons)
+                .put("database", new org.json.JSONObject()
+                        .put("status", db.name())
+                        .put("lastOk", ts(dbStatus.lastOk()))
+                        .put("downSince", ts(dbStatus.downSince()))
+                        .put("failedAttempts", dbStatus.failuresInRow())
+                        .put("error", dbStatus.reason() == null ? org.json.JSONObject.NULL : dbStatus.reason()))
+                .put("monitoringCycle", new org.json.JSONObject()
+                        .put("status", cycleState)
+                        .put("intervalSeconds", cfg.intervalSeconds)
+                        .put("lastOk", ts(ok))
+                        .put("lastFailure", ts(lastCycleFailed))
+                        .put("error", lastCycleError == null ? org.json.JSONObject.NULL : lastCycleError))
+                .put("agentWatchdog", new org.json.JSONObject()
+                        .put("lastOk", ts(lastWatchdogOk))
+                        .put("lastReportReceived", agents))
+                .toString(2);
+        return new Readiness(ready, json);
+    }
+
+    private static Object ts(LocalDateTime t) {
+        return t == null ? org.json.JSONObject.NULL : Json.TS.format(t);
+    }
+
+    /** Server startup: say plainly, once, whether the database works before the first cycle. */
+    public void logStartupDatabaseCheck() {
+        try (Database db = openDb()) {
+            int n = db.countActivePortals();
+            Log.info("Startup check: " + n + " active check(s) in the database.");
+        } catch (DatabaseUnavailableException e) {
+            // DbStatus logged the reason and what to check.
+        } catch (Exception e) {
+            dbStatus.failed(e, LocalDateTime.now(cfg.zone).withNano(0));
+        }
+    }
+
     public boolean testDatabase() {
+        Log.info("Testing database: " + cfg.dbUser + "@" + cfg.dbHost + ":" + cfg.dbPort + "/" + cfg.dbName
+                + " (password " + (cfg.dbPassword.isEmpty() ? "NOT SET" : "set") + ")");
         try (Database db = new Database(cfg)) {
             List<Portal> all = db.activePortals();
             long http = all.stream().filter(p -> p.checkType() == Portal.CheckType.HTTP).count();
@@ -306,14 +527,16 @@ public final class MonitorService {
             }
             return true;
         } catch (Exception e) {
-            Log.error("Database connection FAILED: " + e.getMessage());
+            String[] d = DbStatus.describe(e, cfg.dbUser);
+            Log.error("Database connection FAILED: " + d[0]);
+            Log.error("What to check: " + d[1]);
             return false;
         }
     }
 
     /** Backs the GET /api/status endpoint. */
     public String statusJson() throws Exception {
-        try (Database db = new Database(cfg)) {
+        try (Database db = openDb()) {
             return Json.status(db.activePortals(), db.allAgents(),
                     LocalDateTime.now(cfg.zone).withNano(0));
         }
