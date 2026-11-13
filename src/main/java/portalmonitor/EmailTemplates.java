@@ -17,8 +17,10 @@ public final class EmailTemplates {
     private static final String RED = "#c0392b";
     private static final String GREEN = "#27ae60";
     private static final String BLUE = "#2c6fbb";
-    private static final String RED_CIRCLE = "🔴";
-    private static final String GREEN_CIRCLE = "🟢";
+    // Plain-text subject prefix. Emoji at the start of a subject (they were used before)
+    // push Gmail's spam score up for automated alerts; a fixed bracketed tag does not, and
+    // makes a Gmail filter on subject:"[Portal Monitor]" easy.
+    private static final String TAG = "[Portal Monitor] ";
 
     private EmailTemplates() { }
 
@@ -31,7 +33,6 @@ public final class EmailTemplates {
     public static Email stateChange(String type, List<MonitorService.PendingAlert> alerts,
                                     LocalDateTime now) {
         boolean down = "DOWN".equals(type);
-        String circle = down ? RED_CIRCLE : GREEN_CIRCLE;
         String colour = down ? RED : GREEN;
         String word = down ? "DOWN" : "RECOVERED";
 
@@ -39,10 +40,10 @@ public final class EmailTemplates {
         String title;
         if (alerts.size() == 1) {
             String name = alerts.get(0).portal().name();
-            subject = circle + " " + word + ": " + name;
+            subject = TAG + word + ": " + name;
             title = down ? name + " is DOWN" : name + " is back UP";
         } else {
-            subject = circle + " " + alerts.size() + " services " + word;
+            subject = TAG + alerts.size() + " services " + word;
             title = alerts.size() + " services " + word;
         }
 
@@ -111,8 +112,7 @@ public final class EmailTemplates {
         boolean offline = "AGENT_OFFLINE".equals(type);
         String host = Text.isBlank(hostname) ? agentId : hostname;
 
-        String subject = (offline ? RED_CIRCLE + " SERVER OFFLINE: " : GREEN_CIRCLE + " SERVER BACK ONLINE: ")
-                + host;
+        String subject = TAG + (offline ? "SERVER OFFLINE: " : "SERVER BACK ONLINE: ") + host;
         String title = offline ? host + " is not reporting" : host + " is reporting again";
 
         Map<String, String> rows = new LinkedHashMap<>();
@@ -168,7 +168,7 @@ public final class EmailTemplates {
             html.append(row(k, v));
             text.append(String.format("%-22s%s%n", k + ":", v));
         });
-        return new Email("Portal Monitor - test email",
+        return new Email(TAG + "test email",
                 wrap("SMTP is working", BLUE, html.toString()), text.toString());
     }
 

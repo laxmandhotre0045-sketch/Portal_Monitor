@@ -137,7 +137,7 @@ class MonitorStateTest {
         EmailTemplates.Email email = EmailTemplates.stateChange("RECOVERED",
                 java.util.List.of(new MonitorService.PendingAlert(p, RUNNING, failSince, 0, "RECOVERED")),
                 recoveredAt);
-        assertEquals("\uD83D\uDFE2 RECOVERED: tms-backend", email.subject());
+        assertEquals("[Portal Monitor] RECOVERED: tms-backend", email.subject());
         assertTrue(email.text().contains("1h 12m"), "downtime should read 1h 12m:\n" + email.text());
 
         MonitorService.Decision after = decide(next(p, d), RUNNING, at(74));

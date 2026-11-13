@@ -43,6 +43,11 @@ public final class EmailService {
         p.put("mail.smtp.timeout", "20000");
         p.put("mail.smtp.writetimeout", "20000");
 
+        // Message-ID is built from this address. Without it Jakarta Mail uses the container
+        // hostname (e.g. <...@3f9a1c2b>), and a Message-ID with no real domain is a common
+        // spam-filter signal. With it the id ends in the sender's domain.
+        p.put("mail.from", cfg.smtpFrom);
+
         boolean auth = !cfg.smtpUser.isEmpty();
         p.put("mail.smtp.auth", String.valueOf(auth));
 
@@ -120,6 +125,10 @@ public final class EmailService {
         try {
             MimeMessage msg = new MimeMessage(session);
             msg.setFrom(new InternetAddress(cfg.smtpFrom, cfg.smtpFromName, "UTF-8"));
+            msg.setReplyTo(new InternetAddress[] { new InternetAddress(cfg.smtpFrom) });
+            // Marks it as a machine-generated notification (RFC 3834): auto-responders
+            // (out-of-office) do not reply to it.
+            msg.setHeader("Auto-Submitted", "auto-generated");
             for (String addr : to) {
                 msg.addRecipient(Message.RecipientType.TO, new InternetAddress(addr));
             }

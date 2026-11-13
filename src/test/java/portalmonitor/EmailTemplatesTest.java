@@ -55,7 +55,7 @@ class EmailTemplatesTest {
                         CheckResult.down("Exited (1) 5 minutes ago"), "DOWN")),
                 T0.plusMinutes(2));
 
-        assertEquals("🔴 DOWN: tms-backend", e.subject());
+        assertEquals("[Portal Monitor] DOWN: tms-backend", e.subject());
         for (String needed : new String[]{
                 "tms-backend", "TMS", "CONTAINER", "Exited (1) 5 minutes ago",
                 "2026-01-15 10:00:00", "2026-01-15 10:02:00", "Consecutive failures"}) {
@@ -75,7 +75,7 @@ class EmailTemplatesTest {
                 List.of(new MonitorService.PendingAlert(p, r, T0, 0, "RECOVERED")),
                 T0.plusMinutes(95));
 
-        assertEquals("🟢 RECOVERED: HTTP TMS frontend", e.subject());
+        assertEquals("[Portal Monitor] RECOVERED: HTTP TMS frontend", e.subject());
         assertTrue(e.text().contains("87 ms"), "response time missing");
         assertTrue(e.text().contains("1h 35m"), "downtime missing:\n" + e.text());
         assertTrue(e.text().contains("http://203.0.113.45:6001/"));
@@ -108,7 +108,7 @@ class EmailTemplatesTest {
                         CheckResult.down("unhealthy - Up 2 minutes (unhealthy)"), "DOWN")),
                 T0.plusMinutes(2));
 
-        assertEquals("🔴 3 services DOWN", e.subject());
+        assertEquals("[Portal Monitor] 3 services DOWN", e.subject());
 
         // every check is named
         assertTrue(e.text().contains("senvia_uat_backend"));
@@ -130,7 +130,7 @@ class EmailTemplatesTest {
                 new MonitorService.PendingAlert(container("b", "G"), CheckResult.up("Up 1s"), T0, 0, "RECOVERED")),
                 T0.plusMinutes(10));
 
-        assertEquals("🟢 2 services RECOVERED", e.subject());
+        assertEquals("[Portal Monitor] 2 services RECOVERED", e.subject());
         assertTrue(e.text().contains("10m"), "downtime missing:\n" + e.text());
     }
 
@@ -152,7 +152,7 @@ class EmailTemplatesTest {
         EmailTemplates.Email e = EmailTemplates.agentAlert("AGENT_OFFLINE",
                 "windows-docker-01", "DESKTOP-DOCKER", T0, T0.plusMinutes(4));
 
-        assertEquals("🔴 SERVER OFFLINE: DESKTOP-DOCKER", e.subject());
+        assertEquals("[Portal Monitor] SERVER OFFLINE: DESKTOP-DOCKER", e.subject());
         assertTrue(e.text().contains("windows-docker-01"));
         assertTrue(e.text().contains("2026-01-15 10:00:00"), "last report time missing");
         assertTrue(e.text().toLowerCase().contains("unknown"),
@@ -165,7 +165,7 @@ class EmailTemplatesTest {
         EmailTemplates.Email e = EmailTemplates.agentAlert("AGENT_ONLINE",
                 "windows-docker-01", "DESKTOP-DOCKER", T0, T0.plusMinutes(140));
 
-        assertEquals("🟢 SERVER BACK ONLINE: DESKTOP-DOCKER", e.subject());
+        assertEquals("[Portal Monitor] SERVER BACK ONLINE: DESKTOP-DOCKER", e.subject());
         assertTrue(e.text().contains("2h 20m"), "outage duration missing:\n" + e.text());
     }
 
@@ -175,7 +175,7 @@ class EmailTemplatesTest {
         EmailTemplates.Email e = EmailTemplates.agentAlert("AGENT_OFFLINE",
                 "windows-docker-01", "", T0, T0.plusMinutes(4));
 
-        assertEquals("🔴 SERVER OFFLINE: windows-docker-01", e.subject());
+        assertEquals("[Portal Monitor] SERVER OFFLINE: windows-docker-01", e.subject());
     }
 
     // ---------------------------------------------------------------- escaping
@@ -191,7 +191,7 @@ class EmailTemplatesTest {
         assertTrue(e.html().contains("A&amp;B &lt;script&gt;"));
         assertTrue(e.html().contains("a=1&amp;b=2"));
         // the subject and plain text are not HTML, so they stay literal
-        assertEquals("🔴 DOWN: A&B <script>", e.subject());
+        assertEquals("[Portal Monitor] DOWN: A&B <script>", e.subject());
     }
 
     private static int countOf(String haystack, String needle) {

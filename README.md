@@ -88,15 +88,15 @@ form: `HTTP 503`, `Timeout - no response in time`, `Couldn't connect to server`,
   (the first successful check) sends nothing. While a check stays DOWN, **nothing
   further is sent**.
 - If several checks change state in the same cycle you get **one combined email per
-  recipient**, grouped by `app_group` — subject `🔴 3 services DOWN`, not 20 separate
+  recipient**, grouped by `app_group` — subject `[Portal Monitor] 3 services DOWN`, not 20 separate
   emails.
 
 **Agent watchdog.** If no report arrives for 3 minutes
-(`agent.offlineAfterSeconds`) you get one `🔴 SERVER OFFLINE: <hostname>` email.
+(`agent.offlineAfterSeconds`) you get one `[Portal Monitor] SERVER OFFLINE: <hostname>` email.
 Container checks that were UP become `UNKNOWN`; checks already DOWN **stay DOWN**, so
 you still get their RECOVERED email later. No per-container emails are sent — the
 host is unreachable, so container status is genuinely unknown rather than bad. When
-reports resume you get `🟢 SERVER BACK ONLINE` with the outage duration.
+reports resume you get `[Portal Monitor] SERVER BACK ONLINE` with the outage duration.
 
 The watchdog counts from the server's own start as well as the last report, so
 restarting or redeploying the server never causes a false SERVER OFFLINE. If **no**
@@ -507,7 +507,7 @@ Changes take effect on the next cycle — no restart needed.
 | Agent logs `Server answered HTTP 301` | `agent.serverUrl` uses `http://`. Change it to `https://`. |
 | Agent logs `docker ps returned no containers - NOT reporting` | The account sees a different Docker engine: wrong `docker context`, Windows-containers mode, or no access. The server sends SERVER OFFLINE rather than 31 false DOWN emails. |
 | Log says `Skipping HTTP ...: health_url is not configured` | The row still has `SERVER_PUBLIC_IP`. Set a real URL, or run `enable-http-checks.sql`, which pauses it. |
-| `🔴 SERVER OFFLINE: Docker agent` with "Last report: never" | No agent has reported since the server started. Check that the agent service is running and that its `agent.serverUrl` / `agent.token` are right. |
+| `[Portal Monitor] SERVER OFFLINE: Docker agent` with "Last report: never" | No agent has reported since the server started. Check that the agent service is running and that its `agent.serverUrl` / `agent.token` are right. |
 | `check.php` errors in the Hostinger cron log | That is the retired 1.x PHP checker. Delete its cron job; v2 is the Java service only. |
 | `Public Key Retrieval is not allowed` | MySQL 8 `caching_sha2_password`. Local DB: `db.params=allowPublicKeyRetrieval=true`. Remote DB: `db.params=sslMode=trust`. |
 | No email, but `alert_logs.success = 1` | The relay accepted it. Check Spam, and that `smtp.from` is a real mailbox on that domain (SPF/DKIM). |
